@@ -1,6 +1,7 @@
 """Tests for installer.utils
 """
 
+import base64
 import hashlib
 import textwrap
 from email.message import Message
@@ -12,6 +13,7 @@ from test_records import SAMPLE_RECORDS
 from installer.records import RecordEntry
 from installer.utils import (
     WheelFilename,
+    canonicalize_name,
     construct_record_file,
     copyfileobj_with_hashing,
     fix_shebang,
@@ -38,6 +40,27 @@ class TestParseMetadata:
         assert result.get("Name") == "package"
         assert result.get("version") == "1.0.0"
         assert result.get_all("MULTI-USE-FIELD") == ["1", "2", "3"]
+
+
+class TestCanonicalizeDistributionName:
+    @pytest.mark.parametrize(
+        "string, expected",
+        [
+            # Noop
+            (
+                "package-1",
+                "package-1",
+            ),
+            # PEP 508 canonicalization
+            (
+                "ABC..12",
+                "abc-12",
+            ),
+        ],
+    )
+    def test_valid_cases(self, string, expected):
+        got = canonicalize_name(string)
+        assert expected == got, (expected, got)
 
 
 class TestParseWheelFilename:
@@ -93,10 +116,14 @@ class TestParseWheelFilename:
             parse_wheel_filename(string)
 
 
-class TestCopyFileObjWithHashing(object):
+class TestCopyFileObjWithHashing:
     def test_basic_functionality(self):
         data = b"input data is this"
-        hash_ = hashlib.sha256(data).hexdigest()
+        hash_ = (
+            base64.urlsafe_b64encode(hashlib.sha256(data).digest())
+            .decode("ascii")
+            .rstrip("=")
+        )
         size = len(data)
 
         with BytesIO(data) as source:
@@ -112,21 +139,25 @@ class TestScript:
     @pytest.mark.parametrize(
         ("data", "expected"),
         [
-            (
+            pytest.param(
                 b"#!python\ntest",
                 b"#!/my/python\ntest",
+                id="python",
             ),
-            (
+            pytest.param(
                 b"#!pythonw\ntest",
                 b"#!/my/python\ntest",
+                id="pythonw",
             ),
-            (
+            pytest.param(
                 b"#!python something\ntest",
                 b"#!/my/python\ntest",
+                id="python-with-args",
             ),
-            (
+            pytest.param(
                 b"#!python",
                 b"#!/my/python\n",
+                id="python-no-content",
             ),
         ],
     )
@@ -173,34 +204,37 @@ class TestParseEntryPoints:
     @pytest.mark.parametrize(
         ("script", "expected"),
         [
-            (u"", []),
-            (
-                u"""
+            pytest.param("", [], id="empty"),
+            pytest.param(
+                """
                     [foo]
                     foo = foo.bar
                 """,
                 [],
+                id="unrelated",
             ),
-            (
-                u"""
+            pytest.param(
+                """
                     [console_scripts]
                     package = package.__main__:package
                 """,
                 [
                     ("package", "package.__main__", "package", "console"),
                 ],
+                id="cli",
             ),
-            (
-                u"""
+            pytest.param(
+                """
                     [gui_scripts]
                     package = package.__main__:package
                 """,
                 [
                     ("package", "package.__main__", "package", "gui"),
                 ],
+                id="gui",
             ),
-            (
-                u"""
+            pytest.param(
+                """
                     [console_scripts]
                     magic-cli = magic.cli:main
 
@@ -211,6 +245,7 @@ class TestParseEntryPoints:
                     ("magic-cli", "magic.cli", "main", "console"),
                     ("magic-gui", "magic.gui", "main", "gui"),
                 ],
+                id="cli-and-gui",
             ),
         ],
     )
